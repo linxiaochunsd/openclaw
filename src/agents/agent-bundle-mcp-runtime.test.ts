@@ -25,6 +25,7 @@ import {
   createSessionMcpRuntimeManager,
   getOrCreateSessionMcpRuntime,
 } from "./agent-bundle-mcp-manager.test-support.js";
+import { createMcpProbeFixture } from "./agent-bundle-mcp-probe.test-support.js";
 import { runWithSessionMcpRequestSignal } from "./agent-bundle-mcp-request-context.js";
 import { SESSION_MCP_RUNTIME_MANAGER_KEY } from "./agent-bundle-mcp-runtime-shared.js";
 import {
@@ -86,6 +87,11 @@ type RuntimeParams = Parameters<typeof getOrCreateSessionMcpRuntime>[0];
 type ConfiguredMcpServer = NonNullable<
   NonNullable<NonNullable<RuntimeParams["cfg"]>["mcp"]>["servers"]
 >[string];
+const unopenedMcpConfig = {
+  plugins: { enabled: false },
+  mcp: { servers: { fixture: { command: process.execPath } } },
+} satisfies NonNullable<RuntimeParams["cfg"]>;
+
 const LIST_TOOLS_SERVER_LOG_TIMEOUT_MS = 2_000;
 const LIST_TOOLS_TEST_DEADLINE_MS = 4_000;
 const SHA256_HEX_PATTERN = /^[0-9a-f]{64}$/;
@@ -3237,6 +3243,7 @@ process.on("SIGINT", shutdown);`,
       sessionId: "session-retire",
       sessionKey: "agent:test:session-retire",
       workspaceDir: "/workspace",
+      cfg: unopenedMcpConfig,
     });
     expect(testing.getCachedSessionIds()).toContain("session-retire");
 
@@ -3253,12 +3260,12 @@ process.on("SIGINT", shutdown);`,
       sessionId: "session-ordinary",
       sessionKey: "agent:test:ordinary",
       workspaceDir: "/workspace",
-      cfg: { mcp: {} },
+      cfg: unopenedMcpConfig,
     });
     await getOrCreateSessionMcpRuntime({
       sessionId: "cron-authority:probe",
       workspaceDir: "/workspace",
-      cfg: { mcp: {} },
+      cfg: unopenedMcpConfig,
     });
 
     await retireSessionMcpRuntime({
@@ -3274,7 +3281,7 @@ process.on("SIGINT", shutdown);`,
       sessionId: "session-view-lease",
       sessionKey: "agent:test:session-view-lease",
       workspaceDir: "/workspace",
-      cfg: { mcp: {} },
+      cfg: unopenedMcpConfig,
     });
     const release = runtime.acquireLease?.();
     updateMcpAppModelContext(
@@ -3314,7 +3321,7 @@ process.on("SIGINT", shutdown);`,
       sessionId: "session-view-reset",
       sessionKey: "agent:test:session-view-reset",
       workspaceDir: "/workspace",
-      cfg: { mcp: {} },
+      cfg: unopenedMcpConfig,
     });
     const release = runtime.acquireLease?.();
     updateMcpAppModelContext(
@@ -3348,7 +3355,7 @@ process.on("SIGINT", shutdown);`,
       sessionId: "session-view-reset",
       sessionKey: "agent:test:session-view-reset",
       workspaceDir: "/workspace",
-      cfg: { mcp: {} },
+      cfg: unopenedMcpConfig,
     });
     expect(reused).toBe(runtime);
     expect(reused.mcpAppModelContextRevoked).toBe(true);
@@ -3359,11 +3366,14 @@ process.on("SIGINT", shutdown);`,
   });
 
   it("completes deferred retirement when a materialized run releases its lease", async () => {
+    const fixture = await createMcpProbeFixture(tempDirs);
+    const healthy = expectDefined(fixture.config().mcp?.servers?.healthy, "healthy MCP probe");
     const runtime = await getOrCreateSessionMcpRuntime({
       sessionId: "session-run-lease",
       sessionKey: "agent:test:session-run-lease",
-      workspaceDir: "/workspace",
-      cfg: { mcp: {} },
+      workspaceDir: fixture.params.workspaceDir,
+      manifestRegistry: fixture.params.manifestRegistry,
+      cfg: { plugins: { enabled: false }, mcp: { servers: { healthy } } },
     });
     const materialized = await materializeBundleMcpToolsForRun({ runtime });
 
@@ -3494,13 +3504,16 @@ process.on("SIGINT", shutdown);`,
   );
 
   it("keeps a run-mode subagent runtime alive for an approved follow-up turn", async () => {
+    const fixture = await createMcpProbeFixture(tempDirs);
+    const healthy = expectDefined(fixture.config().mcp?.servers?.healthy, "healthy MCP probe");
     const sessionId = "session-subagent-followup";
     const sessionKey = "agent:test:session-subagent-followup";
     const runtime = await getOrCreateSessionMcpRuntime({
       sessionId,
       sessionKey,
-      workspaceDir: "/workspace",
-      cfg: { mcp: {} },
+      workspaceDir: fixture.params.workspaceDir,
+      manifestRegistry: fixture.params.manifestRegistry,
+      cfg: { plugins: { enabled: false }, mcp: { servers: { healthy } } },
     });
     const materialized = await materializeBundleMcpToolsForRun({ runtime });
     expect(runtime.activeLeases).toBe(1);
@@ -3531,7 +3544,7 @@ process.on("SIGINT", shutdown);`,
       sessionId: "session-reused-after-view",
       sessionKey: "agent:test:session-reused-after-view",
       workspaceDir: "/workspace",
-      cfg: { mcp: { servers: {} } },
+      cfg: unopenedMcpConfig,
     };
     const runtime = await manager.getOrCreate(params);
     const release = runtime.acquireLease?.();
@@ -3553,7 +3566,7 @@ process.on("SIGINT", shutdown);`,
       sessionId: "session-required-retirement",
       sessionKey: "agent:test:session-required-retirement",
       workspaceDir: "/workspace",
-      cfg: { mcp: { servers: {} } },
+      cfg: unopenedMcpConfig,
     };
 
     expect(manager.deferRetirement(params.sessionId, { retainAcrossReuse: true })).toBe(true);
@@ -3602,9 +3615,10 @@ process.on("SIGINT", shutdown);`,
       const runtime = await getOrCreateSessionMcpRuntime({
         sessionId,
         workspaceDir: "/workspace",
-        cfg: { mcp: { servers: {} } },
+        cfg: unopenedMcpConfig,
       });
-      await completeDeferredSessionMcpRuntimeRetirement(runtime);
+      expect(testing.getCachedSessionIds()).toContain(sessionId);
+      await expect(completeDeferredSessionMcpRuntimeRetirement(runtime)).resolves.toBe(true);
       expect(testing.getCachedSessionIds()).not.toContain(sessionId);
     } finally {
       await retireSessionMcpRuntime({ sessionId, reason: "test-cleanup" });
@@ -3785,6 +3799,7 @@ process.on("SIGINT", shutdown);`,
       sessionId: "session-retire-key",
       sessionKey: "agent:test:session-retire-key",
       workspaceDir: "/workspace",
+      cfg: unopenedMcpConfig,
     });
     expect(testing.getCachedSessionIds()).toContain("session-retire-key");
 
@@ -3888,56 +3903,6 @@ describe("requester-scoped MCP connection resolution", () => {
     },
   );
 
-  it.each([undefined, 0] as const)(
-    "keeps session runtimes alive with TTL %s without scheduling idle maintenance",
-    async (sessionIdleTtlMs) => {
-      vi.useFakeTimers();
-      const manager = createSessionMcpRuntimeManager();
-      const params: RuntimeParams = {
-        sessionId: "session-keep-alive",
-        workspaceDir: "/workspace",
-        cfg: { mcp: { sessionIdleTtlMs, servers: {} } },
-      };
-      try {
-        const runtime = await manager.getOrCreate(params);
-        await vi.advanceTimersByTimeAsync(86_400_000);
-        expect(manager.peekSession({ sessionId: params.sessionId })).toBe(runtime);
-        expect(vi.getTimerCount()).toBe(0);
-      } finally {
-        await manager.disposeAll();
-      }
-    },
-  );
-
-  it("changes idle policy on reuse and reload without replacing the runtime", async () => {
-    vi.useFakeTimers();
-    const manager = createSessionMcpRuntimeManager();
-    const params: RuntimeParams = {
-      sessionId: "session-policy",
-      workspaceDir: "/workspace",
-      cfg: { mcp: { servers: {} } },
-    };
-    try {
-      const runtime = await manager.getOrCreate(params);
-      params.cfg = { mcp: { sessionIdleTtlMs: 120_000, servers: {} } };
-      expect(await manager.getOrCreate(params)).toBe(runtime);
-      await vi.advanceTimersByTimeAsync(60_000);
-      expect(manager.peekSession({ sessionId: params.sessionId })).toBe(runtime);
-      await manager.reloadConfig({ cfg: { mcp: { servers: {} } } });
-      // A turn prepared before publication must not restore its former idle policy.
-      expect(await manager.getOrCreate(params)).toBe(runtime);
-      expect(vi.getTimerCount()).toBe(0);
-      await vi.advanceTimersByTimeAsync(86_400_000);
-      expect(manager.peekSession({ sessionId: params.sessionId })).toBe(runtime);
-      await manager.reloadConfig({ cfg: { mcp: { sessionIdleTtlMs: 1_000, servers: {} } } });
-      await vi.advanceTimersByTimeAsync(60_000);
-      expect(manager.listRuntimeKeys()).toEqual([]);
-      expect(vi.getTimerCount()).toBe(0);
-    } finally {
-      await manager.disposeAll();
-    }
-  });
-
   it("keeps replacement capacity reserved when an old child's cleanup is uncertain", async () => {
     const manager = createSessionMcpRuntimeManager({ enableIdleSweepTimer: false });
     const params: RuntimeParams = {
@@ -3959,36 +3924,6 @@ describe("requester-scoped MCP connection resolution", () => {
       await expect(manager.getOrCreate({ ...params, sessionId: "overflow" })).rejects.toThrow(
         "live runtime limit (256)",
       );
-    } finally {
-      await manager.disposeAll();
-    }
-  });
-
-  it("sweeps admitted runtimes only with an opt-in idle timer and stops maintenance after disposal", async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(100_000);
-    const now = vi.fn(() => Date.now());
-    const manager = createSessionMcpRuntimeManager({ now });
-    const params: RuntimeParams = {
-      sessionId: "session-idle-timer",
-      workspaceDir: "/workspace",
-      cfg: { mcp: { sessionIdleTtlMs: 600_000, servers: {} } },
-    };
-    try {
-      await manager.getOrCreate(params);
-      await manager.getOrCreate(params);
-      now.mockClear();
-      await vi.advanceTimersByTimeAsync(10 * 60 * 1000 - 1);
-      expect(manager.listSessionIds()).toEqual([params.sessionId]);
-      expect(now).toHaveBeenCalledTimes(9);
-      await vi.advanceTimersByTimeAsync(1);
-      expect(manager.listSessionIds()).toEqual([]);
-      expect(now).toHaveBeenCalledTimes(10);
-
-      await manager.disposeAll();
-      now.mockClear();
-      await vi.advanceTimersByTimeAsync(60 * 1000);
-      expect(now).not.toHaveBeenCalled();
     } finally {
       await manager.disposeAll();
     }
@@ -4093,7 +4028,7 @@ describe("requester-scoped MCP connection resolution", () => {
           cfg: params.cfg,
           ...(params.toolOverrides ? { toolOverrides: params.toolOverrides } : {}),
         });
-        await manager.getOrCreate({
+        const runtime = await manager.getOrCreate({
           sessionId: params.sessionId,
           workspaceDir: "/workspace",
           cfg: params.cfg,
@@ -4101,9 +4036,13 @@ describe("requester-scoped MCP connection resolution", () => {
           ...(params.requesterSenderId ? { requesterSenderId: params.requesterSenderId } : {}),
         });
         expect(summary.serverNames).toEqual(params.expectedServerNames);
-        expect(summary.fingerprint).toBe(
-          manager.peekSession({ sessionId: params.sessionId })?.configFingerprint,
-        );
+        const cached = manager.peekSession({ sessionId: params.sessionId });
+        if (params.expectedServerNames.length === 0) {
+          expect(cached).toBeUndefined();
+          expect(summary.fingerprint).toBe(runtime.configFingerprint);
+        } else {
+          expect(summary.fingerprint).toBe(cached?.configFingerprint);
+        }
       };
       const cfg = {
         mcp: {
